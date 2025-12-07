@@ -156,15 +156,29 @@ func NewFactory(logger *slog.Logger, jobsCfg model.JobsConfig, fips bool) *Cachi
 		}
 	}
 
-	endpointResolver := endpoints.DefaultResolver().EndpointFor
+	serviceEndpoints := clients.LoadServiceEndpointsFromEnv()
+	defaultResolver := endpoints.DefaultResolver().EndpointFor
+	endpointResolver := defaultResolver
 
 	endpointURLOverride := os.Getenv("AWS_ENDPOINT_URL")
-	if endpointURLOverride != "" {
-		// allow override of all endpoints for local testing
-		endpointResolver = func(_ string, _ string, _ ...func(*endpoints.Options)) (endpoints.ResolvedEndpoint, error) {
-			return endpoints.ResolvedEndpoint{
-				URL: endpointURLOverride,
-			}, nil
+	if len(serviceEndpoints) > 0 || endpointURLOverride != "" {
+		// allow override of specific or all endpoints for local testing
+		endpointResolver = func(service, region string, opts ...func(*endpoints.Options)) (endpoints.ResolvedEndpoint, error) {
+			if ep, ok := serviceEndpoints[service]; ok && ep != "" {
+				return endpoints.ResolvedEndpoint{
+					URL: ep,
+				}, nil
+			}
+			if endpointURLOverride != "" {
+				return endpoints.ResolvedEndpoint{
+					URL: endpointURLOverride,
+				}, nil
+			}
+			resolved, err := defaultResolver(service, region, opts...)
+			if err != nil {
+				return endpoints.ResolvedEndpoint{}, err
+			}
+			return resolved, nil
 		}
 	}
 

@@ -60,6 +60,7 @@ type CachingFactory struct {
 	cleared             *atomic.Bool
 	fipsEnabled         bool
 	endpointURLOverride string
+	serviceEndpoints    map[string]string
 }
 
 type cachedClients struct {
@@ -95,6 +96,7 @@ func NewFactory(logger *slog.Logger, jobsCfg model.JobsConfig, fips bool) (*Cach
 	options = append(options, aws_config.WithLogConfigurationWarnings(true))
 
 	endpointURLOverride := os.Getenv("AWS_ENDPOINT_URL")
+	serviceEndpoints := clients.LoadServiceEndpointsFromEnv()
 
 	options = append(options, aws_config.WithRetryMaxAttempts(5))
 
@@ -103,7 +105,7 @@ func NewFactory(logger *slog.Logger, jobsCfg model.JobsConfig, fips bool) (*Cach
 		return nil, fmt.Errorf("failed to load default aws config: %w", err)
 	}
 
-	stsOptions := createStsOptions(jobsCfg.StsRegion, logger.Enabled(context.Background(), slog.LevelDebug), endpointURLOverride, fips)
+	stsOptions := createStsOptions(jobsCfg.StsRegion, logger.Enabled(context.Background(), slog.LevelDebug), endpointURLOverride, serviceEndpoints, fips)
 	cache := map[model.Role]map[awsRegion]*cachedClients{}
 	for _, discoveryJob := range jobsCfg.DiscoveryJobs {
 		for _, role := range discoveryJob.Roles {
@@ -162,6 +164,7 @@ func NewFactory(logger *slog.Logger, jobsCfg model.JobsConfig, fips bool) (*Cach
 		fipsEnabled:         fips,
 		stsOptions:          stsOptions,
 		endpointURLOverride: endpointURLOverride,
+		serviceEndpoints:    serviceEndpoints,
 		cleared:             atomic.NewBool(false),
 		refreshed:           atomic.NewBool(false),
 	}, nil
@@ -288,8 +291,8 @@ func (c *CachingFactory) createCloudwatchClient(regionConfig *aws.Config) *cloud
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("monitoring"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 
 		// Setting an explicit retryer will override the default settings on the config
@@ -309,8 +312,8 @@ func (c *CachingFactory) createTaggingClient(regionConfig *aws.Config) *resource
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("tagging"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		// The FIPS setting is ignored because FIPS is not available for resource groups tagging apis
 		// If enabled the SDK will try to use non-existent FIPS URLs, https://github.com/aws/aws-sdk-go-v2/issues/2138#issuecomment-1570791988
@@ -323,8 +326,8 @@ func (c *CachingFactory) createAutoScalingClient(assumedConfig *aws.Config) *aut
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("autoscaling"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		// The FIPS setting is ignored because FIPS is not available for EC2 autoscaling apis
 		// If enabled the SDK will try to use non-existent FIPS URLs, https://github.com/aws/aws-sdk-go-v2/issues/2138#issuecomment-1570791988
@@ -339,8 +342,8 @@ func (c *CachingFactory) createAPIGatewayClient(assumedConfig *aws.Config) *apig
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("apigateway"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -353,8 +356,8 @@ func (c *CachingFactory) createAPIGatewayV2Client(assumedConfig *aws.Config) *ap
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("apigateway"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -367,8 +370,8 @@ func (c *CachingFactory) createEC2Client(assumedConfig *aws.Config) *ec2.Client 
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("ec2"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -381,8 +384,8 @@ func (c *CachingFactory) createDMSClient(assumedConfig *aws.Config) *databasemig
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("dms"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -395,8 +398,8 @@ func (c *CachingFactory) createStorageGatewayClient(assumedConfig *aws.Config) *
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("storagegateway"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -409,8 +412,8 @@ func (c *CachingFactory) createPrometheusClient(assumedConfig *aws.Config) *amp.
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("aps"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		// The FIPS setting is ignored because FIPS is not available for amp apis
 		// If enabled the SDK will try to use non-existent FIPS URLs, https://github.com/aws/aws-sdk-go-v2/issues/2138#issuecomment-1570791988
@@ -423,7 +426,14 @@ func (c *CachingFactory) createStsClient(awsConfig *aws.Config) *sts.Client {
 }
 
 func (c *CachingFactory) createIAMClient(awsConfig *aws.Config) *iam.Client {
-	return iam.NewFromConfig(*awsConfig)
+	return iam.NewFromConfig(*awsConfig, func(options *iam.Options) {
+		if ep := c.baseEndpoint("iam"); ep != nil {
+			options.BaseEndpoint = ep
+		}
+		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
+			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
+		}
+	})
 }
 
 func (c *CachingFactory) createShieldClient(awsConfig *aws.Config) *shield.Client {
@@ -431,8 +441,8 @@ func (c *CachingFactory) createShieldClient(awsConfig *aws.Config) *shield.Clien
 		if c.logger != nil && c.logger.Enabled(context.Background(), slog.LevelDebug) {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if c.endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(c.endpointURLOverride)
+		if ep := c.baseEndpoint("shield"); ep != nil {
+			options.BaseEndpoint = ep
 		}
 		if c.fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -440,7 +450,14 @@ func (c *CachingFactory) createShieldClient(awsConfig *aws.Config) *shield.Clien
 	})
 }
 
-func createStsOptions(stsRegion string, isDebugLoggingEnabled bool, endpointURLOverride string, fipsEnabled bool) func(*sts.Options) {
+func (c *CachingFactory) baseEndpoint(service string) *string {
+	if ep := resolveEndpoint(service, c.endpointURLOverride, c.serviceEndpoints); ep != "" {
+		return aws.String(ep)
+	}
+	return nil
+}
+
+func createStsOptions(stsRegion string, isDebugLoggingEnabled bool, endpointURLOverride string, serviceEndpoints map[string]string, fipsEnabled bool) func(*sts.Options) {
 	return func(options *sts.Options) {
 		if stsRegion != "" {
 			options.Region = stsRegion
@@ -448,8 +465,8 @@ func createStsOptions(stsRegion string, isDebugLoggingEnabled bool, endpointURLO
 		if isDebugLoggingEnabled {
 			options.ClientLogMode = aws.LogRequestWithBody | aws.LogResponseWithBody
 		}
-		if endpointURLOverride != "" {
-			options.BaseEndpoint = aws.String(endpointURLOverride)
+		if ep := resolveEndpoint("sts", endpointURLOverride, serviceEndpoints); ep != "" {
+			options.BaseEndpoint = aws.String(ep)
 		}
 		if fipsEnabled {
 			options.EndpointOptions.UseFIPSEndpoint = aws.FIPSEndpointStateEnabled
@@ -478,4 +495,16 @@ func awsConfigForRegion(r model.Role, c *aws.Config, region awsRegion, stsOption
 	regionalConfig.Credentials = aws.NewCredentialsCache(credentials)
 
 	return &regionalConfig
+}
+
+func resolveEndpoint(service, globalOverride string, serviceEndpoints map[string]string) string {
+	if ep, ok := serviceEndpoints[service]; ok && ep != "" {
+		return ep
+	}
+
+	if globalOverride != "" {
+		return globalOverride
+	}
+
+	return ""
 }
