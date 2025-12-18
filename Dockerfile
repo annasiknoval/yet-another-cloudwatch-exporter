@@ -3,7 +3,7 @@
 ############################
 # 1️⃣ Builder stage
 ############################
-FROM golang:1.24.0 AS builder
+FROM docker.io/golang:1.24.0 AS builder
 WORKDIR /src
 
 # Copy go.mod and go.sum first (cache layer)

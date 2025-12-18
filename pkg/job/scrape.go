@@ -112,6 +112,31 @@ func ScrapeAwsData(
 					}
 
 					metrics := runStaticJob(ctx, jobLogger, staticJob, factory.GetCloudwatchClient(region, role, cloudwatchConcurrency))
+					
+					// Process static jobs through GetMetricData processor if the feature flag is enabled
+					flags := config.FlagsFromCtx(ctx)
+					if flags.IsFeatureEnabled("use-getmetricdata-for-static") {
+						cloudwatchClient := factory.GetCloudwatchClient(region, role, cloudwatchConcurrency)
+						gmdProcessor := getmetricdata.NewDefaultProcessor(logger, cloudwatchClient, metricsPerQuery, cloudwatchConcurrency.GetMetricData)
+						
+						// Convert static job metrics to GetMetricData format and process
+						var gmdData []*model.CloudwatchData
+						for _, metric := range metrics {
+							if metric.GetMetricDataProcessingParams != nil {
+								gmdData = append(gmdData, metric)
+							}
+						}
+						
+						if len(gmdData) > 0 {
+							processedMetrics, err := gmdProcessor.Run(ctx, staticJob.Namespace, gmdData)
+							if err != nil {
+								jobLogger.Error("Failed to process static job metrics with GetMetricData", "err", err)
+								return
+							}
+							metrics = processedMetrics
+						}
+					}
+					
 					metricResult := model.CloudwatchMetricResult{
 						Context: &model.ScrapeContext{
 							Region:       region,

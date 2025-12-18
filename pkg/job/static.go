@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
 	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
@@ -52,15 +53,39 @@ func runStaticJob(
 				GetMetricStatisticsResult:     nil,
 			}
 
-			data.GetMetricStatisticsResult = &model.GetMetricStatisticsResult{
-				Results:    clientCloudwatch.GetMetricStatistics(ctx, logger, data.Dimensions, resource.Namespace, metric),
-				Statistics: metric.Statistics,
-			}
+			// Use GetMetricData if the feature flag is enabled, otherwise use GetMetricStatistics
+			flags := config.FlagsFromCtx(ctx)
+			if flags.IsFeatureEnabled("use-getmetricdata-for-static") {
+				// Use GetMetricData API for static jobs
+				// Create a separate CloudwatchData for each statistic
+				for _, statistic := range metric.Statistics {
+					statisticData := data
+					statisticData.GetMetricDataProcessingParams = &model.GetMetricDataProcessingParams{
+						Period:    metric.Period,
+						Length:    metric.Length,
+						Delay:     metric.Delay,
+						Statistic: statistic,
+					}
+					statisticData.GetMetricDataResult = &model.GetMetricDataResult{
+						Statistic: statistic,
+						// GetMetricData will be called later in the processor
+					}
+					mux.Lock()
+					cw = append(cw, &statisticData)
+					mux.Unlock()
+				}
+			} else {
+				// Use traditional GetMetricStatistics API
+				data.GetMetricStatisticsResult = &model.GetMetricStatisticsResult{
+					Results:    clientCloudwatch.GetMetricStatistics(ctx, logger, data.Dimensions, resource.Namespace, metric),
+					Statistics: metric.Statistics,
+				}
 
-			if data.GetMetricStatisticsResult.Results != nil {
-				mux.Lock()
-				cw = append(cw, &data)
-				mux.Unlock()
+				if data.GetMetricStatisticsResult.Results != nil {
+					mux.Lock()
+					cw = append(cw, &data)
+					mux.Unlock()
+				}
 			}
 		}()
 	}

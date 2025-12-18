@@ -315,6 +315,11 @@ func (c *CachingFactory) GetCloudwatchClient(region string, role model.Role, con
 }
 
 func (c *CachingFactory) GetTaggingClient(region string, role model.Role, concurrencyLimit int) tagging.Client {
+	// Check if tagging is disabled via environment variable
+	if os.Getenv("YACE_DISABLE_TAGGING") == "true" {
+		return tagging.NewNoOpClient(c.logger)
+	}
+
 	if !c.refreshed.Load() {
 		// if we have not refreshed then we need to lock in case we are accessing concurrently
 		c.mu.Lock()
